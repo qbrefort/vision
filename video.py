@@ -14,13 +14,15 @@ import nao_live
 global motionProxy
 global tts
 global post
+global sonarProxy
+global memoryProxy
 
-def clustering(data,cvImg,nframe,error):
+def clustering(data,cvImg,nframe,error,K=2):
 	flag1=0
 	flag2=0
 	l0=0
 	l1=0
-	K=2
+	
 	centroid, labels=np.array([]),np.array([])
 	if len(data)>1:
 		dataarray = np.asarray(data)
@@ -73,9 +75,8 @@ def clustering(data,cvImg,nframe,error):
 def video():
 	global motionProxy
 	global post
-
-	
-
+	global sonarProxy
+	global memoryProxy
 	# work ! set current to servos
 	stiffnesses  = 1.0
 	time.sleep(0.5)
@@ -116,13 +117,13 @@ def video():
 	error=0.0
 	nframe=0.0
 	closing = 3
+	tstp,tu=0,0
+	K=2
 	try:
 		while found:
-
 			nframe=nframe+1
 			# Get current image (top cam)
 			naoImage = cameraProxy.getImageRemote(videoClient)
-
 			# Get the image size and pixel array.
 			imageWidth = naoImage[0]
 			imageHeight = naoImage[1]
@@ -137,6 +138,7 @@ def video():
 			cv.CvtColor(cvImg, hsv_img, cv.CV_BGR2HSV)
 			thresholded_img =  cv.CreateImage(cv.GetSize(hsv_img), 8, 1)
 			thresholded_img2 =  cv.CreateImage(cv.GetSize(hsv_img), 8, 1)
+			# Get the orange on the image
 			cv.InRangeS(hsv_img, (0, 150, 150), (40, 255, 255), thresholded_img)
 			cv.InRangeS(hsv_img, (0, 150, 150), (40, 255, 255), thresholded_img2)
 			storage = cv.CreateMemStorage(0)
@@ -152,12 +154,10 @@ def video():
 
 			d=[]
 			data=[]
-			while contour:
-				
+			while contour:			
 				# Draw bounding rectangles
 				bound_rect = cv.BoundingRect(list(contour))
 				contour = contour.h_next()
-
 				# for more details about cv.BoundingRect,see documentation
 				pt1 = (bound_rect[0], bound_rect[1])
 				pt2 = (bound_rect[0] + bound_rect[2], bound_rect[1] + bound_rect[3])
@@ -172,8 +172,8 @@ def video():
 				d.append(math.sqrt(pt1[0]**2+pt2[0]**2))
 				d.append(math.sqrt(pt1[1]**2+pt2[1]**2))
 
-			cvImg,error,centroid,labels = clustering(data,cvImg,nframe,error)
-			
+			cvImg,error,centroid,labels = clustering(data,cvImg,nframe,error,K)
+			# Update the closing size towards the number of found labels
 			if labels.size<2:
 				closing=1
 			if labels.size<6:
@@ -183,20 +183,49 @@ def video():
 			if closing < 1:
 				closing = 0
 			if centroid.size!=0:
-				u = 0
+		
+				uh = 0
 				try:
 					x = int(centroid[0][0])
 					y = int(centroid[0][1])
 				except:
 					print "NaN"
-				k = 30.0/(imageWidth/2)
+				l=memoryProxy.getData("Device/SubDeviceList/US/Left/Sensor/Value")
+				# Same thing for right.
+				r=memoryProxy.getData("Device/SubDeviceList/US/Right/Sensor/Value")
+				kh = 30.0/(imageWidth/2)
+				km = 0.2
+				uh = -kh*(x - imageWidth/2)
+				um =  km*(math.sqrt(l**2+r**2) - 0.5)
+				print "um: ",um
+
+				if (uh>4 or uh<-4):
+					motionProxy.moveTo(0.0, 0.0, uh*almath.TO_RAD)
+					tu = time.time()
+				if (l>0.5 and r>0.5):
+					motionProxy.moveTo(um, 0.0, 0.0)
+					tu = time.time()
+
+
+				else:
+					print "-------------------------"
+					print "K = 1"
+					K=1
+					tstp = time.time()
+				print l,r
+
+				# quand il est proche mettre K=1, on admet qu il n y a plus de parasites
 				
-				u = -k*(x - imageWidth/2)
-				if u>4 or u<-4:
-					motionProxy.moveTo(0.0, 0.0, u*almath.TO_RAD)
+				tact = tstp - tu
+
+				if tact>5:
+					found=False
+					tts.say("You can't hide forever")
+					post.goToPosture("StandInit", 1.0)
+
 				#print "diff",x-imageWidth/2
-				print imageWidth,imageHeight
-				print "u: ",u
+				#print imageWidth,imageHeight
+				
 
 			cv.ShowImage("Real",cvImg)
 			cv.ShowImage("Threshold",thresholded_img2)
@@ -205,7 +234,7 @@ def video():
 	except KeyboardInterrupt:
 		pNames = "Body"
 		post.goToPosture("Crouch", 1.0)
-		time.sleep(5.0)
+		time.sleep(1.0)
 		pStiffnessLists = 0.0
 		pTimeLists = 1.0
 		proxy = ALProxy("ALMotion",IP, 9559)
@@ -216,6 +245,9 @@ def video():
 		cameraProxy.unsubscribe(videoClient)
 		sys.exit(0)
 
+
+
+
 if __name__ == "__main__":
 	IP = "172.20.12.26"
 	PORT = 9559
@@ -225,12 +257,17 @@ if __name__ == "__main__":
 	post = ALProxy("ALRobotPosture", IP, PORT)
 	tts = ALProxy("ALTextToSpeech", IP, PORT)
 	motionProxy = ALProxy("ALMotion", IP, PORT)
-	  # Replace here with your NaoQi's IP address.
+	# Read IP address from first argument if any.
+	# Connect to ALSonar module.
+	sonarProxy = ALProxy("ALSonar", IP, 9559)
+	sonarProxy.subscribe("myApplication")
+	#Now you can retrieve sonar data from ALMemory.
+	memoryProxy = ALProxy("ALMemory", IP, 9559)
 	
 
-	# Read IP address from first argument if any.
 	
 
 	post.goToPosture("StandInit", 1.0)
-	time.sleep(1)
+	time.sleep(2)
+	tts.say("R 2 D 2 Where are you ?")	
 	video()
